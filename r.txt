@@ -1,0 +1,3 @@
+https://huggingface.co/rhasspy/piper-voices/tree/main/tr/tr_TR/dfki/medium
+https://github.com/OHF-Voice/piper1-gpl?tab=readme-ov-file
+
