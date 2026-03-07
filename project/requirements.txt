@@ -1,0 +1,7 @@
+opencv-python>=4.8.0
+# Use 0.10.14 - newer versions removed mp.solutions API
+mediapipe==0.10.14
+numpy>=1.24.0,<2
+pandas>=2.0.0
+# Must match training env (03_TID_Model_Training used TF 2.19 + Keras 3)
+tensorflow>=2.16.0,<2.20
