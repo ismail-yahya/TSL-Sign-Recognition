@@ -32,32 +32,43 @@ def _spatial_normalize(x: np.ndarray) -> np.ndarray:
 
 # Hand landmark indices in flat 255: LH 0-62, RH 63-125
 HAND_START, HAND_END = 0, 126
+# Body reference (shoulders, nose): last 9 values in 255
+BODY_REF_START = 246
+
+
+def is_person_in_frame(sequence: np.ndarray, min_body_frames_ratio: float = 0.5) -> bool:
+    """
+    Reject when person is out of frame (no pose/body detected).
+    Body ref points are zeros when MediaPipe doesn't detect pose.
+    """
+    body = sequence[:, BODY_REF_START:]  # (80, 9)
+    frames_with_body = np.any(np.abs(body) > 1e-5, axis=1)
+    return np.mean(frames_with_body) >= min_body_frames_ratio
 
 
 def has_sign_activity(
     sequence: np.ndarray,
-    min_hand_frames_ratio: float = 0.35,
-    min_temporal_variance: float = 3e-6,
+    min_hand_frames_ratio: float = 0.45,
+    min_temporal_variance: float = 2e-5,
+    min_frame_to_frame_motion: float = 0.03,
 ) -> bool:
     """
-    Check if the sequence has sufficient hand activity (hands visible + motion).
-    Reduces false predictions when idle or hands are static.
-
-    Args:
-        sequence: (80, 255) array
-        min_hand_frames_ratio: Minimum fraction of frames with hand landmarks (default 0.3)
-        min_temporal_variance: Minimum variance across time for hand coords (default 1e-6)
-
-    Returns:
-        True if sequence likely contains a sign.
+    Check if the sequence has sufficient hand activity (hands visible + clear motion).
+    Rejects idle/static poses and out-of-frame. Call is_person_in_frame first.
     """
+    if not is_person_in_frame(sequence):
+        return False
     hand_data = sequence[:, HAND_START:HAND_END]  # (80, 126)
     hand_visible = np.any(np.abs(hand_data) > 1e-6, axis=1)
     if np.mean(hand_visible) < min_hand_frames_ratio:
         return False
-    # Require some motion (signs involve movement)
     var_t = np.var(hand_data, axis=0)
-    return np.mean(var_t) >= min_temporal_variance
+    if np.mean(var_t) < min_temporal_variance:
+        return False
+    # Frame-to-frame motion: reject when standing still (hands visible but not moving)
+    diff = np.abs(np.diff(hand_data, axis=0))
+    total_motion = np.sum(diff)
+    return total_motion >= min_frame_to_frame_motion
 
 
 def prepare_model_input(sequence: np.ndarray) -> np.ndarray:

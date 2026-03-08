@@ -16,11 +16,12 @@ CUSTOM_OBJECTS = {
     "SparseCategoricalCrossentropyWithLS": SparseCategoricalCrossentropyWithLS,
 }
 
-CONFIDENCE_THRESHOLD = 0.55  # Smoother: allow real signs to pass easily
-COOLDOWN_PREDICTIONS = 25   # Shorter cooldown for faster repeat display
+CONFIDENCE_THRESHOLD = 0.6   # مسار 5: رفع قليلاً لتقليل الهلوسات
+COOLDOWN_PREDICTIONS = 30   # Block repeats briefly
 MIN_TOP_MARGIN = 0.08       # Lower margin - correct signs pass more often
-VOTE_WINDOW = 5             # Smaller window = faster consensus
-VOTE_MAJORITY = 3           # 3/5 same predictions = display (faster response)
+VOTE_WINDOW = 6             # الحل 2: تصويت أصر
+VOTE_MAJORITY = 4           # 4/6 same predictions to display
+CONSECUTIVE_REQUIRED = 3    # الحل 1: نفس الفئة 3 مرات متتالية
 
 
 class SignPredictor:
@@ -49,6 +50,8 @@ class SignPredictor:
         self._last_display_key: str | None = None
         self._last_display_at: int = -999
         self._vote_buffer: list[int] = []
+        self._last_class_id: int | None = None
+        self._consecutive_count: int = 0
 
     def predict(self, sequence: np.ndarray) -> tuple[int, float, str | None, float]:
         """
@@ -101,17 +104,29 @@ class SignPredictor:
         return True
 
     def add_vote(self, class_id: int) -> None:
-        """Add prediction to vote buffer for stability."""
+        """Add prediction to vote buffer; update consecutive count."""
         self._vote_buffer.append(class_id)
         if len(self._vote_buffer) > VOTE_WINDOW:
             self._vote_buffer.pop(0)
+        if class_id == self._last_class_id:
+            self._consecutive_count += 1
+        else:
+            self._last_class_id = class_id
+            self._consecutive_count = 1
 
     def vote_passes(self, class_id: int) -> bool:
-        """True if class_id is the majority in recent predictions."""
+        """True if class_id is majority in recent predictions."""
         if len(self._vote_buffer) < VOTE_MAJORITY:
             return False
         count = sum(1 for c in self._vote_buffer if c == class_id)
         return count >= VOTE_MAJORITY
+
+    def consecutive_passes(self, class_id: int) -> bool:
+        """True if class_id appeared CONSECUTIVE_REQUIRED times in a row (filters flicker)."""
+        return (
+            self._last_class_id == class_id
+            and self._consecutive_count >= CONSECUTIVE_REQUIRED
+        )
 
     def record_displayed(
         self, class_id: int, turkish_word: str | None, prediction_index: int = 0
