@@ -104,8 +104,12 @@ def main() -> None:
                     class_id, confidence, turkish_word, top_margin = predictor.predict(model_input)
                     prediction_index += 1
                     predictor.add_vote(class_id)
-                    if predictor.vote_passes(class_id) and predictor.should_display(
-                        class_id, turkish_word, confidence, top_margin, prediction_index
+                    if (
+                        predictor.vote_passes(class_id)
+                        and predictor.consecutive_passes(class_id)
+                        and predictor.should_display(
+                            class_id, turkish_word, confidence, top_margin, prediction_index
+                        )
                     ):
                         display_text = predictor.get_display_text(class_id, turkish_word)
                         predictor.record_displayed(class_id, turkish_word, prediction_index)
