@@ -3,6 +3,7 @@ import time
 import numpy as np
 import tensorflow as tf
 from tensorflow.keras import layers
+from collections import deque, Counter
 from data_pipeline import LandmarkExtractor, FeatureBuilder, SequenceBuffer
 
 @tf.keras.utils.register_keras_serializable()
@@ -76,12 +77,21 @@ class SignLanguageInferenceEngine:
     Real-time inference engine for Sign Language Recognition.
     Connects OpenCV, MediaPipe, the preprocessing pipeline, and the trained Transformer model.
     """
-    def __init__(self, model_path, label_map, buffer_size=30, confidence_threshold=0.6, debounce_frames=15):
+    def __init__(self, model_path, label_map, buffer_size=30, confidence_threshold=0.6, 
+                 debounce_frames=15, voting_window=10, consensus_threshold=4, 
+                 consecutive_threshold=3, motion_threshold=0.0001, presence_threshold=0.2):
         self.model_path = model_path
         self.label_map = label_map
         self.buffer_size = buffer_size
         self.confidence_threshold = confidence_threshold
         self.debounce_frames = debounce_frames
+        
+        # Stability parameters
+        self.voting_window = voting_window
+        self.consensus_threshold = consensus_threshold
+        self.consecutive_threshold = consecutive_threshold
+        self.motion_threshold = motion_threshold
+        self.presence_threshold = presence_threshold
         
         # Initialize pipeline components
         self.extractor = LandmarkExtractor(resize_height=512)
@@ -92,6 +102,7 @@ class SignLanguageInferenceEngine:
         self.model = None
         self.last_prediction = None
         self.frames_since_last_pred = 0
+        self.voting_buffer = deque(maxlen=voting_window)
         
         # Load the model during initialization
         self.load_model()
@@ -100,13 +111,10 @@ class SignLanguageInferenceEngine:
         """Loads the trained Keras model safely by providing custom layer definitions."""
         print(f"Loading model from {self.model_path}...")
         try:
-            # We must specify the custom objects (PositionalEmbedding and TransformerBlock)
-            # so Keras knows how to reconstruct the model architecturally.
             custom_objects = {
                 "TransformerBlock": TransformerBlock,
                 "PositionalEmbedding": PositionalEmbedding
             }
-            # We use compile=False since we only need it for inference
             self.model = tf.keras.models.load_model(
                 self.model_path, 
                 custom_objects=custom_objects,
@@ -122,24 +130,42 @@ class SignLanguageInferenceEngine:
         landmarks = self.extractor.extract_landmarks(frame)
         self.buffer.add_frame(landmarks)
 
+    def has_sign_activity(self, sequence):
+        """
+        Activity Filtering Gate:
+        1. Presence: Are hand landmarks actually detected (not just NaNs/Zeros)?
+        2. Motion: Is there significant frame-to-frame movement (temporal variance) in the hand landmarks?
+        """
+        # Hand indices: Left (501-522), Right (522-543)
+        hands = sequence[:, 501:543, :]
+        
+        # 1. Presence Check: Check if any hand landmarks are detected (not all NaN)
+        present_mask = ~np.isnan(hands).all(axis=(1, 2))
+        presence_ratio = np.mean(present_mask)
+        if presence_ratio < self.presence_threshold:
+            return False
+            
+        # 2. Motion Check: Temporal variance of hand landmarks (X and Y coordinates)
+        # Using nanvar to ignore NaNs in the variance calculation
+        hand_vars = np.nanvar(hands[:, :, :2], axis=0)
+        max_variance = np.nanmax(hand_vars) if not np.all(np.isnan(hand_vars)) else 0
+        
+        return max_variance > self.motion_threshold
+
     def predict(self, sequence_tensor):
-        """Runs the model prediction on a preprocessed sequence tensor of shape (1, 80, 255)."""
+        """Runs the model prediction on a preprocessed sequence tensor."""
         if self.model is None:
             return None, 0.0
             
-        # The model returns a batch of predictions, we take the first one
         predictions = self.model.predict(sequence_tensor, verbose=0)[0]
-        
         predicted_class_idx = np.argmax(predictions)
         confidence = predictions[predicted_class_idx]
-        
-        # Map integer index to a human-readable label
         label = self.label_map.get(predicted_class_idx, f"Class {predicted_class_idx}")
         
         return label, confidence
 
     def run(self):
-        """Starts the webcam and runs continuous real-time inference without blocking."""
+        """Starts the webcam and runs continuous real-time inference with stability gates."""
         if self.model is None:
             print("Cannot run inference: Model not loaded.")
             return
@@ -152,50 +178,65 @@ class SignLanguageInferenceEngine:
         while cap.isOpened():
             ret, frame = cap.read()
             if not ret:
-                print("Failed to grab frame. Exiting...")
                 break
                 
-            # 1. Process the current frame efficiently
             self.process_frame(frame)
             
-            # Debounce logic tracking
             if self.frames_since_last_pred < self.debounce_frames:
                 self.frames_since_last_pred += 1
             
-            # 2. Check if we have enough frames (a full sequence) to make a prediction
             if self.buffer.is_ready():
-                # Throttle predictions via debounce logic to avoid repeating identical rapid reads
                 if self.frames_since_last_pred >= self.debounce_frames:
-                    # Retrieve and preprocess sequence (Fast numpy ops internally)
                     raw_sequence = self.buffer.get_sequence()
-                    model_input_tensor = self.builder.preprocess_sequence(raw_sequence)
                     
-                    # 3. Perform Output Prediction
-                    predicted_label, confidence = self.predict(model_input_tensor)
+                    # --- Stability Feature 1: Activity Filtering Gate ---
+                    if self.has_sign_activity(raw_sequence):
+                        model_input_tensor = self.builder.preprocess_sequence(raw_sequence)
+                        predicted_label, confidence = self.predict(model_input_tensor)
+                        
+                        if confidence >= self.confidence_threshold:
+                            self.voting_buffer.append(predicted_label)
+                        else:
+                            self.voting_buffer.append(None)
+                    else:
+                        # No activity detected - push None to buffer to decay old predictions
+                        self.voting_buffer.append(None)
                     
-                    # 4. Filter by Configurable Confidence Threshold
-                    if confidence >= self.confidence_threshold:
-                        if predicted_label != self.last_prediction:
-                            # Update display string with confidence percentage
-                            confidence_pct = int(confidence * 100)
-                            current_display_text = f"Detected Sign: {predicted_label} ({confidence_pct}%)"
-                            print(current_display_text)
+                    # --- Stability Feature 2: Prediction Stability System (Voting) ---
+                    if len(self.voting_buffer) >= self.consensus_threshold:
+                        counts = Counter(self.voting_buffer)
+                        if None in counts: del counts[None]
+                        
+                        if counts:
+                            most_common_label, count = counts.most_common(1)[0]
                             
-                            # Lock debounce state
-                            self.last_prediction = predicted_label
-                            self.frames_since_last_pred = 0
-                            
-                            # Optional: Clear the buffer allowing continuous empty resets, 
-                            # if preferred over a rolling window.
-                            # self.buffer.clear() 
+                            # 1. Consensus Check (e.g., 4/10 in window)
+                            if count >= self.consensus_threshold:
+                                
+                                # 2. Consecutive Stability Check (e.g., last 3 are the same)
+                                # This ensures the label isn't flickering.
+                                last_few = list(self.voting_buffer)[-self.consecutive_threshold:]
+                                is_consecutive = all(label == most_common_label for label in last_few)
+                                
+                                if is_consecutive:
+                                    if most_common_label != self.last_prediction:
+                                        current_display_text = f"Detected Sign: {most_common_label}"
+                                        print(f"Update: {current_display_text} (Consensus: {count}/{len(self.voting_buffer)}, Consecutive: {self.consecutive_threshold})")
+                                        
+                                        self.last_prediction = most_common_label
+                                        self.frames_since_last_pred = 0
             
-            # Overlay the prediction on the video frame
+            # UI Overlay
             cv2.putText(frame, current_display_text, (20, 50), 
                         cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2, cv2.LINE_AA)
             
+            # Show Activity status (Optional Debug info)
+            activity_status = "Active" if self.buffer.is_ready() and self.has_sign_activity(self.buffer.get_sequence()) else "Idle"
+            cv2.putText(frame, f"Status: {activity_status}", (20, 90), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 1, cv2.LINE_AA)
+
             cv2.imshow("Sign Language Inference Engine", frame)
             
-            # Exit loop efficiently non-blocking
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
                 
