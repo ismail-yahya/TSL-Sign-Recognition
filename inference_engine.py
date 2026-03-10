@@ -77,9 +77,9 @@ class SignLanguageInferenceEngine:
     Real-time inference engine for Sign Language Recognition.
     Connects OpenCV, MediaPipe, the preprocessing pipeline, and the trained Transformer model.
     """
-    def __init__(self, model_path, label_map, buffer_size=30, confidence_threshold=0.6, 
-                 debounce_frames=15, voting_window=10, consensus_threshold=4, 
-                 consecutive_threshold=3, motion_threshold=0.0001, presence_threshold=0.2):
+    def __init__(self, model_path, label_map, buffer_size=80, confidence_threshold=0.6, 
+                 debounce_frames=20, voting_window=3, consensus_threshold=2, 
+                 consecutive_threshold=2, motion_threshold=0.0001, presence_threshold=0.2):
         self.model_path = model_path
         self.label_map = label_map
         self.buffer_size = buffer_size
@@ -95,7 +95,7 @@ class SignLanguageInferenceEngine:
         
         # Initialize pipeline components
         self.extractor = LandmarkExtractor(resize_height=512)
-        self.builder = FeatureBuilder(target_frames=80)
+        self.builder = FeatureBuilder(ema_alpha=0.5)
         self.buffer = SequenceBuffer(buffer_size=self.buffer_size)
         
         # State variables
@@ -135,9 +135,15 @@ class SignLanguageInferenceEngine:
         Activity Filtering Gate:
         1. Presence: Are hand landmarks actually detected (not just NaNs/Zeros)?
         2. Motion: Is there significant frame-to-frame movement (temporal variance) in the hand landmarks?
+        
+        NOTE: With the updated 85-landmark format:
+          [0:21]  = Left Hand
+          [21:42] = Right Hand
+          [42:82] = Lips
+          [82:85] = Pose
         """
-        # Hand indices: Left (501-522), Right (522-543)
-        hands = sequence[:, 501:543, :]
+        # Hand indices in the 85-landmark format: Left [0:21], Right [21:42]
+        hands = sequence[:, 0:42, :]
         
         # 1. Presence Check: Check if any hand landmarks are detected (not all NaN)
         present_mask = ~np.isnan(hands).all(axis=(1, 2))
@@ -233,18 +239,28 @@ class SignLanguageInferenceEngine:
                                 if is_consecutive:
                                     if most_common_label != self.last_prediction:
                                         current_display_text = f"Detected Sign: {most_common_label}"
-                                        print(f"Update: {current_display_text} (Consensus: {count}/{len(self.voting_buffer)}, Consecutive: {self.consecutive_threshold})")
+                                        print(f"Update: {current_display_text} (Consensus: {count}/{len(self.voting_buffer)})")
                                         
                                         self.last_prediction = most_common_label
                                         self.frames_since_last_pred = 0
+                                        
+                                        # ==========================================
+                                        # --- Memory Reset for next sign ---
+                                        # Clear frame buffer so old gesture frames
+                                        # don't bleed into the next detection.
+                                        # Clear voting buffer to reset consensus.
+                                        # ==========================================
+                                        self.buffer.clear()
+                                        self.voting_buffer.clear()
             
             # UI Overlay
             cv2.putText(frame, current_display_text, (20, 50), 
                         cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2, cv2.LINE_AA)
             
-            # Show Activity status (Optional Debug info)
-            activity_status = "Active" if self.buffer.is_ready() and self.has_sign_activity(self.buffer.get_sequence()) else "Idle"
-            cv2.putText(frame, f"Status: {activity_status}", (20, 90), 
+            # Show buffer fill status (Debug info)
+            buf_len = len(self.buffer.buffer)
+            buf_max = self.buffer.buffer_size
+            cv2.putText(frame, f"Buffer: {buf_len}/{buf_max}", (20, 90), 
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 1, cv2.LINE_AA)
 
             cv2.imshow("Sign Language Inference Engine", frame)
@@ -257,236 +273,29 @@ class SignLanguageInferenceEngine:
 
 
 if __name__ == "__main__":
-    # Example Label Mapping (Turkish Sign Language)
-    # The dictionary maps integer model output indices (0-225) to string labels.
-    LABEL_MAP = {
-        0: "abla",
-        1: "acele",
-        2: "acikmak",
-        3: "afiyet_olsun",
-        4: "agabey",
-        5: "agac",
-        6: "agir",
-        7: "aglamak",
-        8: "aile",
-        9: "akilli",
-        10: "akilsiz",
-        11: "akraba",
-        12: "alisveris",
-        13: "anahtar",
-        14: "anne",
-        15: "arkadas",
-        16: "ataturk",
-        17: "ayakkabi",
-        18: "ayna",
-        19: "ayni",
-        20: "baba",
-        21: "bahce",
-        22: "bakmak",
-        23: "bal",
-        24: "bardak",
-        25: "bayrak",
-        26: "bayram",
-        27: "bebek",
-        28: "bekar",
-        29: "beklemek",
-        30: "ben",
-        31: "benzin",
-        32: "beraber",
-        33: "bilgi_vermek",
-        34: "biz",
-        35: "calismak",
-        36: "carsamba",
-        37: "catal",
-        38: "cay",
-        39: "caydanlik",
-        40: "cekic",
-        41: "cirkin",
-        42: "cocuk",
-        43: "corba",
-        44: "cuma",
-        45: "cumartesi",
-        46: "cuzdan",
-        47: "dakika",
-        48: "dede",
-        49: "degistirmek",
-        50: "devirmek",
-        51: "devlet",
-        52: "doktor",
-        53: "dolu",
-        54: "dugun",
-        55: "dun",
-        56: "dusman",
-        57: "duvar",
-        58: "eczane",
-        59: "eldiven",
-        60: "emek",
-        61: "emekli",
-        62: "erkek",
-        63: "et",
-        64: "ev",
-        65: "evet",
-        66: "evli",
-        67: "ezberlemek",
-        68: "fil",
-        69: "fotograf",
-        70: "futbol",
-        71: "gecmis",
-        72: "gecmis_olsun",
-        73: "getirmek",
-        74: "gol",
-        75: "gomlek",
-        76: "gormek",
-        77: "gostermek",
-        78: "gulmek",
-        79: "hafif",
-        80: "hakli",
-        81: "hali",
-        82: "hasta",
-        83: "hastane",
-        84: "hata",
-        85: "havlu",
-        86: "hayir",
-        87: "hayirli_olsun",
-        88: "hayvan",
-        89: "hediye",
-        90: "helal",
-        91: "hep",
-        92: "hic",
-        93: "hoscakal",
-        94: "icmek",
-        95: "igne",
-        96: "ilac",
-        97: "ilgilenmemek",
-        98: "isik",
-        99: "itmek",
-        100: "iyi",
-        101: "kacmak",
-        102: "kahvalti",
-        103: "kalem",
-        104: "kalorifer",
-        105: "kapi",
-        106: "kardes",
-        107: "kavsak",
-        108: "kaza",
-        109: "kemer",
-        110: "keske",
-        111: "kim",
-        112: "kimlik",
-        113: "kira",
-        114: "kitap",
-        115: "kiyma",
-        116: "kiz",
-        117: "koku",
-        118: "kolonya",
-        119: "komur",
-        120: "kopek",
-        121: "kopru",
-        122: "kotu",
-        123: "kucak",
-        124: "leke",
-        125: "maas",
-        126: "makas",
-        127: "masa",
-        128: "masallah",
-        129: "melek",
-        130: "memnun_olmak",
-        131: "mendil",
-        132: "merdiven",
-        133: "misafir",
-        134: "mudur",
-        135: "musluk",
-        136: "nasil",
-        137: "neden",
-        138: "nerede",
-        139: "nine",
-        140: "ocak",
-        141: "oda",
-        142: "odun",
-        143: "ogretmen",
-        144: "okul",
-        145: "olimpiyat",
-        146: "olmaz",
-        147: "olur",
-        148: "onlar",
-        149: "orman",
-        150: "oruc",
-        151: "ozur_dilemek",
-        152: "pamuk",
-        153: "pantolon",
-        154: "para",
-        155: "pastirma",
-        156: "patates",
-        157: "pazar",
-        158: "pazartesi",
-        159: "pencere",
-        160: "persembe",
-        161: "piknik",
-        162: "polis",
-        163: "psikoloji",
-        164: "rica_etmek",
-        165: "saat",
-        166: "sabun",
-        167: "salca",
-        168: "sali",
-        169: "sampiyon",
-        170: "sapka",
-        171: "savas",
-        172: "seker",
-        173: "selam",
-        174: "semsiye",
-        175: "sen",
-        176: "senet",
-        177: "serbest",
-        178: "ses",
-        179: "sevmek",
-        180: "seytan",
-        181: "sinir",
-        182: "siz",
-        183: "soylemek",
-        184: "soz",
-        185: "sut",
-        186: "tamam",
-        187: "tarak",
-        188: "tarih",
-        189: "tatil",
-        190: "tatli",
-        191: "tavan",
-        192: "tehlike",
-        193: "telefon",
-        194: "terazi",
-        195: "terzi",
-        196: "tesekkur",
-        197: "tornavida",
-        198: "turkiye",
-        199: "turuncu",
-        200: "tuvalet",
-        201: "un",
-        202: "uzak",
-        203: "uzgun",
-        204: "var",
-        205: "vergi",
-        206: "yakin",
-        207: "yalniz",
-        208: "yanlis",
-        209: "yapmak",
-        210: "yarabandi",
-        211: "yardim",
-        212: "yarin",
-        213: "yasak",
-        214: "yastik",
-        215: "yatak",
-        216: "yavas",
-        217: "yemek",
-        218: "yemek_pisirmek",
-        219: "yildiz",
-        220: "yok",
-        221: "yol",
-        222: "yorgun",
-        223: "yumurta",
-        224: "zaman",
-        225: "zor"
-    }
+    LABEL_MAP = { 0: "abla", 1: "acele", 2: "acikmak", 3: "afiyet_olsun", 4: "agabey", 5: "agac", 6: "agir", 7: "aglamak", 8: "aile", 9: "akilli", 
+    10: "akilsiz", 11: "akraba", 12: "alisveris", 13: "anahtar", 14: "anne", 15: "arkadas", 16: "ataturk", 17: "ayakkabi", 18: "ayna", 19: "ayni", 
+    20: "baba", 21: "bahce", 22: "bakmak", 23: "bal", 24: "bardak", 25: "bayrak", 26: "bayram", 27: "bebek", 28: "bekar", 29: "beklemek", 
+    30: "ben", 31: "benzin", 32: "beraber", 33: "bilgi_vermek", 34: "biz", 35: "calismak", 36: "carsamba", 37: "catal", 38: "cay", 39: "caydanlik", 
+    40: "cekic", 41: "cirkin", 42: "cocuk", 43: "corba", 44: "cuma", 45: "cumartesi", 46: "cuzdan", 47: "dakika", 48: "dede", 49: "degistirmek", 
+    50: "devirmek", 51: "devlet", 52: "doktor", 53: "dolu", 54: "dugun", 55: "dun", 56: "dusman", 57: "duvar", 58: "eczane", 59: "eldiven", 
+    60: "emek", 61: "emekli", 62: "erkek", 63: "et", 64: "ev", 65: "evet", 66: "evli", 67: "ezberlemek", 68: "fil", 69: "fotograf", 
+    70: "futbol", 71: "gecmis", 72: "gecmis_olsun", 73: "getirmek", 74: "gol", 75: "gomlek", 76: "gormek", 77: "gostermek", 78: "gulmek", 79: "hafif", 
+    80: "hakli", 81: "hali", 82: "hasta", 83: "hastane", 84: "hata", 85: "havlu", 86: "hayir", 87: "hayirli_olsun", 88: "hayvan", 89: "hediye", 
+    90: "helal", 91: "hep", 92: "hic", 93: "hoscakal", 94: "icmek", 95: "igne", 96: "ilac", 97: "ilgilenmemek", 98: "isik", 99: "itmek", 
+    100: "iyi", 101: "kacmak", 102: "kahvalti", 103: "kalem", 104: "kalorifer", 105: "kapi", 106: "kardes", 107: "kavsak", 108: "kaza", 109: "kemer", 
+    110: "keske", 111: "kim", 112: "kimlik", 113: "kira", 114: "kitap", 115: "kiyma", 116: "kiz", 117: "koku", 118: "kolonya", 119: "komur", 
+    120: "kopek", 121: "kopru", 122: "kotu", 123: "kucak", 124: "leke", 125: "maas", 126: "makas", 127: "masa", 128: "masallah", 129: "melek", 
+    130: "memnun_olmak", 131: "mendil", 132: "merdiven", 133: "misafir", 134: "mudur", 135: "musluk", 136: "nasil", 137: "neden", 138: "nerede", 139: "nine", 
+    140: "ocak", 141: "oda", 142: "odun", 143: "ogretmen", 144: "okul", 145: "olimpiyat", 146: "olmaz", 147: "olur", 148: "onlar", 149: "orman", 
+    150: "oruc", 151: "ozur_dilemek", 152: "pamuk", 153: "pantolon", 154: "para", 155: "pastirma", 156: "patates", 157: "pazar", 158: "pazartesi", 159: "pencere", 
+    160: "persembe", 161: "piknik", 162: "polis", 163: "psikoloji", 164: "rica_etmek", 165: "saat", 166: "sabun", 167: "salca", 168: "sali", 169: "sampiyon", 
+    170: "sapka", 171: "savas", 172: "seker", 173: "selam", 174: "semsiye", 175: "sen", 176: "senet", 177: "serbest", 178: "ses", 179: "sevmek", 
+    180: "seytan", 181: "sinir", 182: "siz", 183: "soylemek", 184: "soz", 185: "sut", 186: "tamam", 187: "tarak", 188: "tarih", 189: "tatil", 
+    190: "tatli", 191: "tavan", 192: "tehlike", 193: "telefon", 194: "terazi", 195: "terzi", 196: "tesekkur", 197: "tornavida", 198: "turkiye", 199: "turuncu", 
+    200: "tuvalet", 201: "un", 202: "uzak", 203: "uzgun", 204: "var", 205: "vergi", 206: "yakin", 207: "yalniz", 208: "yanlis", 209: "yapmak", 
+    210: "yarabandi", 211: "yardim", 212: "yarin", 213: "yasak", 214: "yastik", 215: "yatak", 216: "yavas", 217: "yemek", 218: "yemek_pisirmek", 219: "yildiz", 
+    220: "yok", 221: "yol", 222: "yorgun", 223: "yumurta", 224: "zaman", 225: "zor" }
     
     model_file_path = "best_model_transformer.keras"
     
@@ -494,9 +303,9 @@ if __name__ == "__main__":
     engine = SignLanguageInferenceEngine(
         model_path=model_file_path,
         label_map=LABEL_MAP,
-        buffer_size=40,             # Accumulate 30 frames before sending to preprocessing
+        buffer_size=80,             # Sliding window of 80 frames to match training
         confidence_threshold=0.6,   # Ignore predictions below 60% confidence
-        debounce_frames=20          # Wait 15 frames before predicting another distinct sign explicitly
+        debounce_frames=20          # Wait 20 frames before predicting another distinct sign
     )
     
     # Start engine process loop
