@@ -180,6 +180,18 @@ class SignLanguageInferenceEngine:
             if not ret:
                 break
                 
+            # --- Square Crop & Resize to 512x512 ---
+            # Crop to center square to avoid distortion when resizing
+            h, w, _ = frame.shape
+            min_dim = min(h, w)
+            start_x = (w - min_dim) // 2
+            start_y = (h - min_dim) // 2
+            cropped_frame = frame[start_y:start_y+min_dim, start_x:start_x+min_dim]
+            
+            # Resize to 512x512
+            frame = cv2.resize(cropped_frame, (512, 512))
+            # ----------------------------------------
+                
             self.process_frame(frame)
             
             if self.frames_since_last_pred < self.debounce_frames:
@@ -482,9 +494,9 @@ if __name__ == "__main__":
     engine = SignLanguageInferenceEngine(
         model_path=model_file_path,
         label_map=LABEL_MAP,
-        buffer_size=30,             # Accumulate 30 frames before sending to preprocessing
+        buffer_size=40,             # Accumulate 30 frames before sending to preprocessing
         confidence_threshold=0.6,   # Ignore predictions below 60% confidence
-        debounce_frames=15          # Wait 15 frames before predicting another distinct sign explicitly
+        debounce_frames=20          # Wait 15 frames before predicting another distinct sign explicitly
     )
     
     # Start engine process loop
