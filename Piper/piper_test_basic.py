@@ -2,7 +2,7 @@ import wave
 from piper import PiperVoice
 
 # Use the provided Turkish voice model
-model_path = "c:\\Users\\ISMAIL YAHYA\\Desktop\\Piper\\tr_TR-dfki-medium.onnx"
+model_path = "Piper/tr_TR-dfki-medium.onnx"
 voice = PiperVoice.load(model_path)
 
 # Turkish text to synthesize

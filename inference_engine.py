@@ -5,6 +5,7 @@ import tensorflow as tf
 from tensorflow.keras import layers
 from collections import deque, Counter
 from data_pipeline import LandmarkExtractor, FeatureBuilder, SequenceBuffer
+from speech_engine import SpeechEngine
 
 @tf.keras.utils.register_keras_serializable()
 class TransformerBlock(layers.Layer):
@@ -103,6 +104,20 @@ class SignLanguageInferenceEngine:
         self.last_prediction = None
         self.frames_since_last_pred = 0
         self.voting_buffer = deque(maxlen=voting_window)
+        
+        # --- Voice Speech Engine & UI Callbacks ---
+        self.currently_speaking = ""
+        self.speech_engine = SpeechEngine(model_path=r"c:\Users\ISMAIL YAHYA\Desktop\مشاريع ASL Sign Recognition\Piper\tr_TR-dfki-medium.onnx", cooldown=2.0)
+        
+        def on_speech_start(word):
+            self.currently_speaking = word
+            
+        def on_speech_end(word):
+            if self.currently_speaking == word:
+                self.currently_speaking = ""
+                
+        self.speech_engine.add_start_callback(on_speech_start)
+        self.speech_engine.add_end_callback(on_speech_end)
         
         # Load the model during initialization
         self.load_model()
@@ -244,6 +259,9 @@ class SignLanguageInferenceEngine:
                                         self.last_prediction = most_common_label
                                         self.frames_since_last_pred = 0
                                         
+                                        # Trigger Text-to-Speech (Non-Blocking)
+                                        self.speech_engine.speak(most_common_label)
+                                        
                                         # ==========================================
                                         # --- Memory Reset for next sign ---
                                         # Clear frame buffer so old gesture frames
@@ -256,6 +274,11 @@ class SignLanguageInferenceEngine:
             # UI Overlay
             cv2.putText(frame, current_display_text, (20, 50), 
                         cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2, cv2.LINE_AA)
+            
+            # Show speaking feedback on UI (Large Text for spoken words)
+            if self.currently_speaking:
+                cv2.putText(frame, f"Nontaq: {self.currently_speaking}", (20, 100), 
+                            cv2.FONT_HERSHEY_DUPLEX, 1, (0, 165, 255), 2, cv2.LINE_AA)
             
             # Show buffer fill status (Debug info)
             buf_len = len(self.buffer.buffer)
@@ -270,6 +293,7 @@ class SignLanguageInferenceEngine:
                 
         cap.release()
         cv2.destroyAllWindows()
+        self.speech_engine.stop()
 
 
 if __name__ == "__main__":
