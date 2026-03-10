@@ -8,7 +8,7 @@ import cv2
 class Camera:
     """Webcam capture using OpenCV."""
 
-    def __init__(self, device_id: int = 1, width: int = 640, height: int = 480):
+    def __init__(self, device_id: int = 0, width: int = 640, height: int = 480):
         """
         Initialize camera parameters.
 

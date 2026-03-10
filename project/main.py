@@ -18,6 +18,7 @@ from inference.landmark_extractor import extract_landmarks
 from inference.frame_buffer import FrameBuffer
 from inference.preprocessing import prepare_model_input, has_sign_activity
 from inference.predictor import SignPredictor
+from tts import speak_turkish
 
 # Match training pipeline: 01_TID_Landmark_Extraction used 512x512 for MediaPipe
 MP_FRAME_SIZE = 512
@@ -114,6 +115,7 @@ def main() -> None:
                         display_text = predictor.get_display_text(class_id, turkish_word)
                         predictor.record_displayed(class_id, turkish_word, prediction_index)
                         print(f"[{display_text}] confidence={confidence:.2f} | class={class_id}")
+                        speak_turkish(display_text)
 
             if use_display:
                 # Scale up for display if 512x512 is small
