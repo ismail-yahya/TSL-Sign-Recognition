@@ -107,7 +107,8 @@ class SignLanguageInferenceEngine:
         
         # --- Voice Speech Engine & UI Callbacks ---
         self.currently_speaking = ""
-        self.speech_engine = SpeechEngine(model_path=r"c:\Users\ISMAIL YAHYA\Desktop\مشاريع ASL Sign Recognition\Piper\tr_TR-dfki-medium.onnx", cooldown=2.0)
+        # The speech engine handles its own default path if None is passed
+        self.speech_engine = SpeechEngine(cooldown=2.0)
         
         def on_speech_start(word):
             self.currently_speaking = word
@@ -295,6 +296,19 @@ class SignLanguageInferenceEngine:
         cv2.destroyAllWindows()
         self.speech_engine.stop()
 
+
+def load_label_map(csv_path):
+    """Loads class labels from the CSV mapping file."""
+    label_map = {}
+    try:
+        import csv
+        with open(csv_path, mode='r', encoding='utf-8') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                label_map[int(row['ClassId'])] = row['TR']
+    except Exception as e:
+        print(f"Error loading label map from {csv_path}: {e}")
+    return label_map
 
 if __name__ == "__main__":
     LABEL_MAP = { 0: "abla", 1: "acele", 2: "acikmak", 3: "afiyet_olsun", 4: "agabey", 5: "agac", 6: "agir", 7: "aglamak", 8: "aile", 9: "akilli", 

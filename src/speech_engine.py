@@ -8,8 +8,14 @@ class SpeechEngine:
     محرك نطق مستقل يستخدم Piper TTS مع تقنية التدفق الصوتي (Audio Streaming).
     يعمل في Thread منفصل لعدم عرقلة المحرك الرئيسي، ويدعم Callbacks لتحديث الواجهة.
     """
-    def __init__(self, model_path=r"c:\Users\ISMAIL YAHYA\Desktop\مشاريع ASL Sign Recognition\Piper\tr_TR-dfki-medium.onnx", cooldown=3.0):
-        self.model_path = model_path
+    def __init__(self, model_path=None, cooldown=3.0):
+        if model_path is None:
+            # Reached through the new standardized directory structure
+            import os
+            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            self.model_path = os.path.join(base_dir, "assets", "tr_TR-dfki-medium.onnx")
+        else:
+            self.model_path = model_path
         self.queue = queue.Queue()
         self.running = True
         self.voice = None
