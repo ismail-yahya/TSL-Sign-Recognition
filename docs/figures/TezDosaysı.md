@@ -16,9 +16,9 @@
 
 <br>
 
-**22370031804-Hasan ELRECEB**
-
 **22370031805-İsmail YAHYA**
+
+**22370031804-Hasan ELRECEB**
 
 <br><br>
 
@@ -82,10 +82,10 @@ Seydişehir, …./…./ 20…
 <br>
 
 **İmza**
-Hasan ELRECEB
+İsmail YAHYA
 
 **İmza**
-İsmail YAHYA
+Hasan ELRECEB
 
 ---
 
