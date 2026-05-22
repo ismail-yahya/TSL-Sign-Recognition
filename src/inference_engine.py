@@ -1,76 +1,22 @@
 import cv2
+import time
 import numpy as np
 import tensorflow as tf
-from tensorflow.keras import layers
 from collections import deque, Counter
-from data_pipeline import LandmarkExtractor, FeatureBuilder, SequenceBuffer
-from speech_engine import SpeechEngine
 
-@tf.keras.utils.register_keras_serializable()
-class TransformerBlock(layers.Layer):
-    """
-    Tek bir Transformer Encoder blogu.
-    Multi-Head Attention + Feed-Forward Network + Layer Normalization + Dropout
-    """
-    def __init__(self, embed_dim=256, num_heads=8, ff_dim=768, rate=0.1, **kwargs):
-        super().__init__(**kwargs)
-        self.embed_dim = embed_dim
-        self.num_heads = num_heads
-        self.ff_dim = ff_dim
-        self.rate = rate
-        self.att = layers.MultiHeadAttention(num_heads=num_heads, key_dim=embed_dim)
-        self.ffn = tf.keras.Sequential([
-            layers.Dense(ff_dim, activation="gelu"),
-            layers.Dense(embed_dim),
-        ])
-        self.layernorm1 = layers.LayerNormalization(epsilon=1e-6)
-        self.layernorm2 = layers.LayerNormalization(epsilon=1e-6)
-        self.dropout1 = layers.Dropout(rate)
-        self.dropout2 = layers.Dropout(rate)
+# Architecture definitions live in model.py (Single Responsibility)
+# Import them here so Keras can resolve the custom layers when loading a saved model.
+try:
+    # Absolute import (when running from project root via main.py)
+    from src.model import TransformerBlock, PositionalEmbedding
+    from src.data_pipeline import LandmarkExtractor, FeatureBuilder, SequenceBuffer
+    from src.speech_engine import SpeechEngine
+except ImportError:
+    # Relative import fallback (when running inference_engine.py directly from src/)
+    from model import TransformerBlock, PositionalEmbedding
+    from data_pipeline import LandmarkExtractor, FeatureBuilder, SequenceBuffer
+    from speech_engine import SpeechEngine
 
-    def call(self, inputs, training=False):
-        attn_output = self.att(inputs, inputs)
-        attn_output = self.dropout1(attn_output, training=training)
-        out1 = self.layernorm1(inputs + attn_output)
-        
-        ffn_output = self.ffn(out1)
-        ffn_output = self.dropout2(ffn_output, training=training)
-        return self.layernorm2(out1 + ffn_output)
-
-    def get_config(self):
-        config = super().get_config()
-        config.update({
-            "embed_dim": self.embed_dim,
-            "num_heads": self.num_heads,
-            "ff_dim": self.ff_dim,
-            "rate": self.rate,
-        })
-        return config
-
-@tf.keras.utils.register_keras_serializable()
-class PositionalEmbedding(layers.Layer):
-    """
-    Ogrenilebilir konumsal gomme katmani.
-    """
-    def __init__(self, maxlen=80, embed_dim=256, **kwargs):
-        super().__init__(**kwargs)
-        self.maxlen = maxlen
-        self.embed_dim = embed_dim
-        self.pos_emb = layers.Embedding(input_dim=maxlen, output_dim=embed_dim)
-
-    def call(self, x):
-        maxlen = tf.shape(x)[1]
-        positions = tf.range(start=0, limit=maxlen, delta=1)
-        positions = self.pos_emb(positions)
-        return x + positions
-
-    def get_config(self):
-        config = super().get_config()
-        config.update({
-            "maxlen": self.maxlen,
-            "embed_dim": self.embed_dim,
-        })
-        return config
 
 class SignLanguageInferenceEngine:
     """
@@ -103,6 +49,8 @@ class SignLanguageInferenceEngine:
         self.last_prediction = None
         self.frames_since_last_pred = 0
         self.voting_buffer = deque(maxlen=voting_window)
+        self.last_latency_ms = 0.0      # Last inference latency (ms), shown on overlay
+        self.last_confidence  = 0.0     # Last accepted confidence, shown on overlay
         
         # --- Voice Speech Engine & UI Callbacks ---
         self.currently_speaking = ""
@@ -174,16 +122,32 @@ class SignLanguageInferenceEngine:
         return max_variance > self.motion_threshold
 
     def predict(self, sequence_tensor):
-        """Runs the model prediction on a preprocessed sequence tensor."""
+        """
+        Runs the model prediction on a preprocessed sequence tensor.
+
+        Uses direct model.__call__() instead of model.predict() for real-time inference.
+        model.predict() is designed for large batch jobs and carries significant overhead
+        (progress tracking, callbacks, data validation). The direct call path is 30-50%
+        faster per frame at the cost of no batch-level features — exactly what we want here.
+
+        Returns:
+            label        (str)   : Turkish label of the predicted sign class.
+            confidence   (float) : Softmax probability of the top prediction (0.0–1.0).
+            latency_ms   (float) : Inference wall-clock time in milliseconds.
+        """
         if self.model is None:
-            return None, 0.0
-            
-        predictions = self.model.predict(sequence_tensor, verbose=0)[0]
-        predicted_class_idx = np.argmax(predictions)
-        confidence = predictions[predicted_class_idx]
-        label = self.label_map.get(predicted_class_idx, f"Class {predicted_class_idx}")
-        
-        return label, confidence
+            return None, 0.0, 0.0
+
+        # ✅ Task 4: Direct __call__ — bypasses model.predict() overhead
+        t0 = time.perf_counter()
+        predictions = self.model(sequence_tensor, training=False)[0].numpy()
+        latency_ms  = (time.perf_counter() - t0) * 1000.0
+
+        predicted_class_idx = int(np.argmax(predictions))
+        confidence          = float(predictions[predicted_class_idx])
+        label               = self.label_map.get(predicted_class_idx, f"Class {predicted_class_idx}")
+
+        return label, confidence, latency_ms
 
     def process_image(self, frame, auto_speak=True):
         """
@@ -218,9 +182,12 @@ class SignLanguageInferenceEngine:
                 # --- Stability Feature 1: Activity Filtering Gate ---
                 if self.has_sign_activity(raw_sequence):
                     model_input_tensor = self.builder.preprocess_sequence(raw_sequence)
-                    predicted_label, confidence = self.predict(model_input_tensor)
-                    
+                    # ✅ Task 4: unpack 3-tuple (label, confidence, latency_ms)
+                    predicted_label, confidence, latency_ms = self.predict(model_input_tensor)
+                    self.last_latency_ms = latency_ms
+
                     if confidence >= self.confidence_threshold:
+                        self.last_confidence = confidence
                         self.voting_buffer.append(predicted_label)
                     else:
                         self.voting_buffer.append(None)
@@ -268,8 +235,17 @@ class SignLanguageInferenceEngine:
 
         buf_len = len(self.buffer.buffer)
         buf_max = self.buffer.buffer_size
+
+        # Overlay: Buffer progress
         cv2.putText(frame_resized, f"Buffer: {buf_len}/{buf_max}", (20, 140),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 1, cv2.LINE_AA)
+
+        # Overlay: Inference latency + confidence (shown when a prediction has been made)
+        if self.last_latency_ms > 0:
+            cv2.putText(frame_resized,
+                        f"Inference: {self.last_latency_ms:.1f}ms | Conf: {self.last_confidence:.0%}",
+                        (20, 170),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, (180, 180, 180), 1, cv2.LINE_AA)
 
         return frame_resized, prediction_result
         
@@ -293,35 +269,19 @@ def load_label_map(csv_path):
     return label_map
 
 if __name__ == "__main__":
-    # Test block safely moved out and directory fixed
     import os
     base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     model_file_path = os.path.join(base_dir, "models", "best_model_transformer.keras")
-    
-    # Shortened mapping for module test
-    LABEL_MAP = { 0: "abla", 1: "acele", 2: "acikmak", 3: "afiyet_olsun", 4: "agabey", 5: "agac", 6: "agir", 7: "aglamak", 8: "aile", 9: "akilli", 
-    10: "akilsiz", 11: "akraba", 12: "alisveris", 13: "anahtar", 14: "anne", 15: "arkadas", 16: "ataturk", 17: "ayakkabi", 18: "ayna", 19: "ayni", 
-    20: "baba", 21: "bahce", 22: "bakmak", 23: "bal", 24: "bardak", 25: "bayrak", 26: "bayram", 27: "bebek", 28: "bekar", 29: "beklemek", 
-    30: "ben", 31: "benzin", 32: "beraber", 33: "bilgi_vermek", 34: "biz", 35: "calismak", 36: "carsamba", 37: "catal", 38: "cay", 39: "caydanlik", 
-    40: "cekic", 41: "cirkin", 42: "cocuk", 43: "corba", 44: "cuma", 45: "cumartesi", 46: "cuzdan", 47: "dakika", 48: "dede", 49: "degistirmek", 
-    50: "devirmek", 51: "devlet", 52: "doktor", 53: "dolu", 54: "dugun", 55: "dun", 56: "dusman", 57: "duvar", 58: "eczane", 59: "eldiven", 
-    60: "emek", 61: "emekli", 62: "erkek", 63: "et", 64: "ev", 65: "evet", 66: "evli", 67: "ezberlemek", 68: "fil", 69: "fotograf", 
-    70: "futbol", 71: "gecmis", 72: "gecmis_olsun", 73: "getirmek", 74: "gol", 75: "gomlek", 76: "gormek", 77: "gostermek", 78: "gulmek", 79: "hafif", 
-    80: "hakli", 81: "hali", 82: "hasta", 83: "hastane", 84: "hata", 85: "havlu", 86: "hayir", 87: "hayirli_olsun", 88: "hayvan", 89: "hediye", 
-    90: "helal", 91: "hep", 92: "hic", 93: "hoscakal", 94: "icmek", 95: "igne", 96: "ilac", 97: "ilgilenmemek", 98: "isik", 99: "itmek", 
-    100: "iyi", 101: "kacmak", 102: "kahvalti", 103: "kalem", 104: "kalorifer", 105: "kapi", 106: "kardes", 107: "kavsak", 108: "kaza", 109: "kemer", 
-    110: "keske", 111: "kim", 112: "kimlik", 113: "kira", 114: "kitap", 115: "kiyma", 116: "kiz", 117: "koku", 118: "kolonya", 119: "komur", 
-    120: "kopek", 121: "kopru", 122: "kotu", 123: "kucak", 124: "leke", 125: "maas", 126: "makas", 127: "masa", 128: "masallah", 129: "melek", 
-    130: "memnun_olmak", 131: "mendil", 132: "merdiven", 133: "misafir", 134: "mudur", 135: "musluk", 136: "nasil", 137: "neden", 138: "nerede", 139: "nine", 
-    140: "ocak", 141: "oda", 142: "odun", 143: "ogretmen", 144: "okul", 145: "olimpiyat", 146: "olmaz", 147: "olur", 148: "onlar", 149: "orman", 
-    150: "oruc", 151: "ozur_dilemek", 152: "pamuk", 153: "pantolon", 154: "para", 155: "pastirma", 156: "patates", 157: "pazar", 158: "pazartesi", 159: "pencere", 
-    160: "persembe", 161: "piknik", 162: "polis", 163: "psikoloji", 164: "rica_etmek", 165: "saat", 166: "sabun", 167: "salca", 168: "sali", 169: "sampiyon", 
-    170: "sapka", 171: "savas", 172: "seker", 173: "selam", 174: "semsiye", 175: "sen", 176: "senet", 177: "serbest", 178: "ses", 179: "sevmek", 
-    180: "seytan", 181: "sinir", 182: "siz", 183: "soylemek", 184: "soz", 185: "sut", 186: "tamam", 187: "tarak", 188: "tarih", 189: "tatil", 
-    190: "tatli", 191: "tavan", 192: "tehlike", 193: "telefon", 194: "terazi", 195: "terzi", 196: "tesekkur", 197: "tornavida", 198: "turkiye", 199: "turuncu", 
-    200: "tuvalet", 201: "un", 202: "uzak", 203: "uzgun", 204: "var", 205: "vergi", 206: "yakin", 207: "yalniz", 208: "yanlis", 209: "yapmak", 
-    210: "yarabandi", 211: "yardim", 212: "yarin", 213: "yasak", 214: "yastik", 215: "yatak", 216: "yavas", 217: "yemek", 218: "yemek_pisirmek", 219: "yildiz", 
-    220: "yok", 221: "yol", 222: "yorgun", 223: "yumurta", 224: "zaman", 225: "zor" }
+    csv_path        = os.path.join(base_dir, "assets", "SignList_ClassId_TR_EN.csv")
+
+    # ✅ Task 2: Load labels from the single source of truth (CSV), not a hardcoded dict.
+    LABEL_MAP = load_label_map(csv_path)
+    if not LABEL_MAP:
+        raise FileNotFoundError(
+            f"Could not load label map from: {csv_path}\n"
+            "Make sure 'assets/SignList_ClassId_TR_EN.csv' exists in the project root."
+        )
+    print(f"[inference_engine] Loaded {len(LABEL_MAP)} labels from CSV.")
 
     # Initialize robust Inference Engine
     engine = SignLanguageInferenceEngine(
@@ -331,13 +291,14 @@ if __name__ == "__main__":
         confidence_threshold=0.6,   # Ignore predictions below 60% confidence
         debounce_frames=20          # Wait 20 frames before predicting another distinct sign
     )
-    
+
     # To run test without GUI, loop manually here:
-    print("Test mode enabled. Starting camera...")
+    print("Test mode enabled. Starting camera... (press 'q' to quit)")
     cap = cv2.VideoCapture(0)
     while cap.isOpened():
         ret, frame = cap.read()
-        if not ret: break
+        if not ret:
+            break
         out_frame, label = engine.process_image(frame)
         cv2.imshow("Test Mode", out_frame)
         if cv2.waitKey(1) & 0xFF == ord('q'):

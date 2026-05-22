@@ -91,12 +91,12 @@ def add_header(img, title):
 
 def main():
     # --- Exact Image Path from USER ---
-    image_path = "user_sign_image_1774967112825.png" 
+    image_path = "docs/scripts/user_sign_image.jpeg" 
     
     if not os.path.exists(image_path):
         # Fallback to any user_sign_image in root
         import glob
-        alt = glob.glob("user_sign_image*.png")
+        alt = glob.glob("user_sign_image*.jpeg")
         if alt: image_path = alt[0]
     
     image = cv2.imread(image_path)

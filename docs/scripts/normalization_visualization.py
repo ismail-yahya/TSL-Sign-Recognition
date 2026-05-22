@@ -7,10 +7,10 @@ import os
 def main():
     # --- 1. إعداد المسارات وتحميل الصورة ---
     # نستخدم نفس الصورة المرجعية للمستخدم
-    image_path = "user_sign_image_1774967112825.png"
+    image_path = "docs/scripts/user_sign_image.jpeg"
     if not os.path.exists(image_path):
         import glob
-        alt = glob.glob("user_sign_image*.png")
+        alt = glob.glob("user_sign_image*.jpeg")
         if alt: image_path = alt[0]
         else:
             print("Error: Reference image not found.")

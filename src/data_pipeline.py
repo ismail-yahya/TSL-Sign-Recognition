@@ -2,6 +2,7 @@ import cv2
 import mediapipe as mp
 import numpy as np
 import pandas as pd
+from collections import deque
 
 
 class LandmarkExtractor:
@@ -215,17 +216,18 @@ class SequenceBuffer:
         self.buffer_size = buffer_size
         self.stride = stride
         self.min_frames = min_frames_to_predict
-        self.buffer = []
+        # ✅ Task 5: deque with maxlen auto-evicts oldest frame in O(1).
+        # list.pop(0) was O(n) — it shifted every element in memory each frame.
+        self.buffer = deque(maxlen=buffer_size)
         self._frames_since_last_ready = 0
 
     def add_frame(self, frame_landmarks):
         """
         Appends a newly extracted (85, 3) landmark frame to the buffer.
-        Maintains the sliding window size of buffer_size.
+        Maintains the sliding window automatically — deque(maxlen) evicts
+        the oldest frame when full, no manual pop(0) needed.
         """
-        self.buffer.append(frame_landmarks)
-        if len(self.buffer) > self.buffer_size:
-            self.buffer.pop(0)
+        self.buffer.append(frame_landmarks)   # O(1) append + O(1) auto-eviction
         self._frames_since_last_ready += 1
 
     def is_ready(self):
@@ -246,15 +248,20 @@ class SequenceBuffer:
     def get_sequence(self):
         """
         Returns a numpy array of shape (buffer_size, 85, 3).
-        
+
         If the buffer has fewer than buffer_size frames, the sequence is
         padded at the BEGINNING by repeating the oldest frame (first-frame
-        replication). This simulates a "still" pose before the gesture.
-        
+        replication). This simulates a "still" pose before the gesture,
+        avoiding the attention-distribution instability caused by zero-padding.
+
         Resets the stride counter after each call.
+
+        Note: list(self.buffer) is required before np.array() because numpy
+        cannot directly build a 3-D array from a deque of 2-D numpy arrays
+        without the intermediate list conversion.
         """
         self._frames_since_last_ready = 0
-        seq = np.array(self.buffer)
+        seq = np.array(list(self.buffer))   # deque → list → numpy (buffer_size, 85, 3)
 
         # --- First-Frame Replication Padding ---
         if len(seq) < self.buffer_size:
@@ -268,5 +275,5 @@ class SequenceBuffer:
 
     def clear(self):
         """Empties the buffer and resets the stride counter."""
-        self.buffer = []
+        self.buffer = deque(maxlen=self.buffer_size)  # fresh deque preserves maxlen
         self._frames_since_last_ready = 0
