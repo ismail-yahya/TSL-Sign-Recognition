@@ -70,14 +70,44 @@ TSL-Sign-Recognition/
 
 ---
 
-## ⚡ Performance Optimizations
+## 🧠 Deep Learning Model Architecture
 
-To achieve smooth, real-time inference on standard laptop hardware, the system incorporates the following optimizations:
+The system uses an **Encoder-Only Transformer** model optimized for sequential sign gesture classification. Rather than using raw video frames, the model is trained on preprocessed temporal sequences of 3D skeleton coordinates extracted by MediaPipe.
 
-1. **Direct Model Invocation**: Replaced slow `model.predict()` calls (which incur huge overhead due to batching, callbacks, and validation) with direct tensor call execution `model(tensor, training=False).numpy()`. This reduces inference latency by **30-50%**.
-2. **Circular Buffer via deque**: Upgraded the temporal window from a standard python `list` to a `collections.deque(maxlen=80)`. This changes frame queue updates from $O(N)$ copy operations to $O(1)$ insertions.
-3. **Decoupled GUI Threading**: Implemented a `CameraWorker(QThread)` that handles capture, landmark extraction, and AI inference asynchronously. The PyQt5 main thread only listens to light Qt signals, preventing frame drop and interface freezing.
-4. **Non-blocking Speech Synthesis**: Integrated Piper TTS inside an independent execution thread, utilizing a custom debounce gate to prevent speech overlap and system lag when speaking.
+### 📐 Input Feature Representation
+* **Temporal Window (Sequence Length)**: $80$ frames (approximately 2.6 seconds at 30 FPS).
+* **Input Landmarks**: $85$ hand, lip, and body keypoints extracted per frame:
+  * **Left Hand**: $21$ keypoints
+  * **Right Hand**: $21$ keypoints
+  * **Lips**: $40$ keypoints
+  * **Pose / Shoulder**: $3$ keypoints
+* **Features per Keypoint**: $3$ spatial coordinates ($X, Y, Z$).
+* **Input Tensor Shape**: `(Batch, 80, 255)` (where $85 \text{ landmarks} \times 3 \text{ coordinates} = 255$ features per frame).
+
+---
+
+### 🧱 Layer-by-Layer Architecture
+
+| Layer / Component | Type | Output Shape | Parameters | Description |
+| :--- | :--- | :---: | :---: | :--- |
+| **Input** | `InputLayer` | `(None, 80, 255)` | 0 | Batched sequence of temporal landmarks. |
+| **Feature Projection** | `Dense` | `(None, 80, 256)` | 65,536 | Projects 255 input features into a 256-dimensional embedding space. |
+| **Positional Embedding** | `PositionalEmbedding` | `(None, 80, 256)` | 20,480 | Learnable spatial-temporal position embeddings added to sequence vectors. |
+| **Transformer Block 0** | `TransformerBlock` | `(None, 80, 256)` | 2,498,816 | First Encoder Layer: 8-head self-attention + MLP (768 units) + LayerNorm + Dropout. |
+| **Transformer Block 1** | `TransformerBlock` | `(None, 80, 256)` | 2,498,816 | Second Encoder Layer: 8-head self-attention + MLP (768 units) + LayerNorm + Dropout. |
+| **Transformer Block 2** | `TransformerBlock` | `(None, 80, 256)` | 2,498,816 | Third Encoder Layer: 8-head self-attention + MLP (768 units) + LayerNorm + Dropout. |
+| **Temporal Pooling** | `GlobalAveragePooling1D` | `(None, 256)` | 0 | Collapses the time dimension ($80$ frames) into a fixed-length representation. |
+| **Dropout Gate** | `Dropout` (10%) | `(None, 256)` | 0 | Regularization to prevent model overfitting. |
+| **Prep Classification** | `Dense` | `(None, 256)` | 65,792 | Fully-connected dense layer mapping features prior to final classification. |
+| **Dropout Gate** | `Dropout` (10%) | `(None, 256)` | 0 | Secondary regularizer. |
+| **Output / Classification**| `Dense` (Softmax) | `(None, 226)` | 58,082 | Maps output to the 226 Turkish Sign Language classes in the AUTSL dataset. |
+
+---
+
+### 📊 Model Complexity & Parameters
+* **Total Parameters**: **7,706,338** (approx. **29.40 MB**)
+* **Trainable Parameters**: **7,706,338** (100% trainable)
+* **Non-trainable Parameters**: **0**
 
 ---
 
