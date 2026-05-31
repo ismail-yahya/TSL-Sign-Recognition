@@ -177,6 +177,7 @@ SEYDİŞEHİR - 2026
     - 3.6.1. Sınıflandırma sonuçlarının metinleştirilmesi ve çıkarım istikrarı 17
     - 3.6.2. Metinden konuşmaya çeviri (Piper TTS) entegrasyonu 17
     - 3.6.3. Sistem çıktısının bütünleştirilmesi 17
+  - 3.7. Grafiksel Kullanıcı Arayüzü (GUI) 18
 - 4. ARAŞTIRMA SONUÇLARI VE TARTIŞMA 19
   - 4.1. Eğitim Süreci ve Hiperparametre Optimizasyonu 19
   - 4.2. Modelin Test Seti Üzerindeki Başarısı 20
@@ -186,10 +187,9 @@ SEYDİŞEHİR - 2026
 - 5. SONUÇLAR VE ÖNERİLER 23
   - 5.1 Sonuçlar 23
   - 5.2 Öneriler 23
-    - 5.2.1. Kullanıcı arayüzü geliştirilmesi ve entegrasyonu 24
-    - 5.2.2. Model optimizasyonu ve performans iyileştirme 24
-    - 5.2.3. Zorlu sınıflar için çoklu modalite yaklaşımı 24
-    - 5.2.4. Sürekli işaret dili çevirisine geçiş 24
+    - 5.2.1. Model optimizasyonu ve performans iyileştirme 24
+    - 5.2.2. Zorlu sınıflar için çoklu modalite yaklaşımı 24
+    - 5.2.3. Sürekli işaret dili çevirisine geçiş 24
 - 6. KAYNAKLAR 25
 - EKLER 27
 
@@ -205,6 +205,7 @@ SEYDİŞEHİR - 2026
 - Şekil 6: Model Çıktısından Ses Sentezine Geçiş Şeması.
 - Şekil 7: İşaret Dilinden Konuşmaya Dönüşüm Sisteminin Uçtan Uca Çalışma Mimarisi ve Aşamalı Veri Akış Şeması (Yapay zeka desteği ile tasarlanmıştır).
 - Şekil 8: Transformer modelinin 200 epokluk eğitim sürecinde elde edilen eğitim (mavi) ve doğrulama (kırmızı) setlerine ait doğruluk (sol) ve kayıp (sağ) değişim eğrileri.
+- Şekil 9: Geliştirilen PyQt5 Tabanlı Grafiksel Kullanıcı Arayüzü (GUI) Genel Görünümü.
 
 ---
 
@@ -469,6 +470,22 @@ Uçtan uca mimarinin son halkası olarak, Transformer modelinin tanıdığı ve 
 
 _Şekil 6: Model Çıktısından Ses Sentezine Geçiş Şeması._
 
+## 3.7. Grafiksel Kullanıcı Arayüzü (GUI)
+
+Sistemin son kullanıcılar (işitme engelli bireyler ve iletişim kurdukları kişiler) tarafından herhangi bir teknik kurulum veya komut satırı bilgisine ihtiyaç duyulmadan, rahatlıkla kullanılabilmesi amacıyla modern, kullanıcı dostu ve yüksek performanslı bir grafiksel kullanıcı arayüzü (GUI) geliştirilmiştir. Arayüz tasarımı PyQt5 kütüphanesi kullanılarak nesne yönelimli programlama prensipleriyle kodlanmış ve modern tasarım trendlerine (koyu mod, kart tasarımları, yumuşak geçişler) uygun bir QSS (Qt Style Sheets) tema motoruyla görselleştirilmiştir.
+
+Geliştirilen arayüzün temel özellikleri ve teknik altyapısı aşağıda maddeler hâlinde detaylandırılmıştır:
+
+- **Çoklu İş Parçacığı (Multi-threading) Mimarisi:** Gerçek zamanlı derin öğrenme modellerinin ve bilgisayarlı görü algoritmalarının arayüzde donma veya gecikmeye (flickering/latency) yol açmasını engellemek için arka plan iş parçacığı mimarisi (`QThread`) kurulmuştur. Kamera görüntülerinin okunması, MediaPipe ile landmark çıkarılması, Transformer modeliyle tahmin yürütülmesi ve Piper TTS ile ses sentezlenmesi gibi yüksek işlem gücü gerektiren tüm süreçler `CameraWorker` adlı ikincil bir iş parçacığında çalıştırılmaktadır. Ana arayüz (`MainWindow`) ise bu iş parçacığıyla yalnızca güvenli Qt Sinyalleri (`pyqtSignal`) üzerinden haberleşmekte, böylece 30+ FPS hızında kesintisiz ve akıcı bir kullanıcı deneyimi sağlanmaktadır.
+- **Kamera Canlı Akışı ve Landmark Görselleştirme:** Sol panelde konumlandırılan canlı kamera ekranı, kullanıcıya anlık geri bildirim vermektedir. MediaPipe Holistic tarafından çıkarılan üst gövde, yüz ve el eklem noktaları kameradan gelen anlık görüntü üzerine bindirilerek kullanıcının sistem tarafından doğru algılanıp algılanmadığını kontrol etmesini sağlar. Canlı akışın altında ise 80 karelik zamansal kayan pencerenin (sequence buffer) doluluk oranını gösteren ince bir tampon çubuğu (Buffer Bar) ve durumu anlık güncelleyen bir sayaç yer alır.
+- **Dinamik Algılama Paneli ve Görsel Animasyonlar:** Arayüzün sağ kısmında, model tarafından algılanan işaretin en büyük ve okunabilir şekilde (42px yazı boyutuyla) sunulduğu bir "Algılanan İşaret" kartı yer almaktadır. Sistem yeni bir kelime algıladığında, bu kartın üzerinde opaklık derecesini değiştiren yumuşak bir parlama (flash) animasyonu çalışarak kullanıcının dikkatini çekmektedir. Ayrıca tahminin doğruluk yüzdesini (Confidence) gösteren bir güven barı da bu kartta konumlandırılmıştır.
+- **Sesli Konuşma ve Durum Göstergesi:** Arayüzde ses motorunun o anki durumunu gösteren özel bir seslendirme paneli bulunmaktadır. Sistem sentezlenen sesi dışa aktarırken yanıp sönen dinamik bir konuşma ikonu (pulsing indicator) devreye girmektedir. Kullanıcılar dilerlerse alt kısımda yer alan kontrol butonları vasıtasıyla sesli seslendirmeyi (Speech ON/OFF) tek bir tıklamayla kapatıp açabilmektedirler.
+- **Kelime Geçmişi Takibi:** İletişimin sürekliliğini sağlamak amacıyla, son algılanan 10 kelimeyi kronolojik olarak listeleyen bir geçmiş paneli (Word History) entegre edilmiştir. Bu panel sayesinde kullanıcılar kurdukları cümlelerin veya ardışık işaretlerin akışını geriye dönük olarak takip edebilmekte ve "Temizle" (Clear) butonuyla bu listeyi sıfırlayabilmektedir.
+
+Geliştirilen grafiksel kullanıcı arayüzünün (GUI) genel görünümü, canlı kamera akışı üzerindeki landmark görselleştirmeleri, tahmin panelleri ve kontrol butonları Şekil 9'da sunulmuştur.
+
+_Şekil 9: Geliştirilen PyQt5 Tabanlı Grafiksel Kullanıcı Arayüzü (GUI) Genel Görünümü._
+
 ---
 
 # 4. ARAŞTIRMA SONUÇLARI VE TARTIŞMA
@@ -523,21 +540,17 @@ Sistem, AUTSL veri setinde yer alan günlük yaşama ait 226 farklı işaret sı
 
 ## 5.2 Öneriler
 
-Proje mevcut aşamada arka plan algoritmaları, model eğitimi ve gerçek zamanlı çıkarım (inference) motoru açısından başarılı ve istikrarlı sonuçlar vermiş olsa da, sistemin nihai bir ürüne dönüşmesi için geliştirme süreci aktif olarak devam etmektedir. Elde edilen bulgular ve mevcut proje planı doğrultusunda aşağıdaki öneriler ve gelecek çalışmalar belirlenmiştir.
+Proje mevcut aşamada arka plan algoritmaları, model eğitimi ve gerçek zamanlı çıkarım (inference) motoru açısından başarılı ve istikrarlı sonuçlar vermiş olsa da, sistemin sürekli iyileştirilmesi ve daha geniş kitlelere ulaştırılması amacıyla gelecek çalışmalar planlanmaktadır. Elde edilen bulgular ve mevcut proje planı doğrultusunda aşağıdaki öneriler ve gelecek çalışmalar belirlenmiştir.
 
-### 5.2.1. Kullanıcı arayüzü geliştirilmesi ve entegrasyonu
-
-Sistemin son kullanıcılar (işitme engelli bireyler ve iletişim kurdukları kişiler) tarafından teknik bilgiye ihtiyaç duyulmadan, kolayca kullanılabilmesi için modern bir grafiksel kullanıcı arayüzü (GUI) tasarlanacaktır. Bu arayüz; canlı kamera akışını, tahmin edilen metni, sistemin anlık durumunu ve seslendirme seçeneklerini tek bir ekranda kullanıcı dostu bir deneyimle sunacaktır.
-
-### 5.2.2. Model optimizasyonu ve performans iyileştirme
+### 5.2.1. Model optimizasyonu ve performans iyileştirme
 
 Model mimarisi yüksek bir başarı yakalamış olsa da, nihai üründe en iyi sonuca ulaşmak amacıyla hiperparametre optimizasyon çalışmalarına devam edilecektir. Özellikle %90.96'lık test doğruluğunu daha da yukarı taşımak için veri artırma (data augmentation) teknikleri genişletilecek ve kayan pencere (sliding window) mekanizmasının anlık tepki süresi optimize edilecektir.
 
-### 5.2.3. Zorlu sınıflar için çoklu modalite yaklaşımı
+### 5.2.2. Zorlu sınıflar için çoklu modalite yaklaşımı
 
 Sınıflandırma raporunda tespit edilen ve tanınma oranı nispeten düşük olan (görsel olarak birbirine çok benzeyen) işaretlerin ayrımını kolaylaştırmak için, el şekillerini daha detaylı analiz edecek ek derinlik (depth) verilerinin veya yüz mimiklerini daha hassas ağırlıklandıran dikkat (attention) mekanizmalarının modele dahil edilmesi akademik bir öneri olarak değerlendirilmektedir.
 
-### 5.2.4. Sürekli işaret dili çevirisine geçiş
+### 5.2.3. Sürekli işaret dili çevirisine geçiş
 
 Mevcut sistem "izole" (tekli) kelimeleri yüksek doğrulukla tanımaktadır. Gelecekteki çalışmalarda, ardışık yapılan işaretleri doğal bir cümle bütünlüğünde çevirebilen ve Türkçenin gramer yapısını anlayan Doğal Dil İşleme (NLP) destekli modellere geçiş yapılması, sistemin kapsamını büyük ölçüde artıracaktır.
 
