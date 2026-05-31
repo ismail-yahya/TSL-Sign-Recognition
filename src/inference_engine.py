@@ -23,26 +23,34 @@ class SignLanguageInferenceEngine:
     Real-time inference engine for Sign Language Recognition.
     Connects OpenCV, MediaPipe, the preprocessing pipeline, and the trained Transformer model.
     """
-    def __init__(self, model_path, label_map, buffer_size=80, confidence_threshold=0.6, 
-                 debounce_frames=20, voting_window=3, consensus_threshold=2, 
-                 consecutive_threshold=2, motion_threshold=0.0001, presence_threshold=0.2):
+    def __init__(self, model_path, label_map, buffer_size=80, confidence_threshold=0.6,
+                 debounce_frames=20, voting_window=6, consensus_threshold=4,
+                 consecutive_threshold=3, presence_threshold=0.45,
+                 min_temporal_variance=2e-5, min_frame_to_frame_motion=0.03,
+                 body_frames_ratio=0.5, min_top_margin=0.08):
         self.model_path = model_path
         self.label_map = label_map
         self.buffer_size = buffer_size
         self.confidence_threshold = confidence_threshold
         self.debounce_frames = debounce_frames
-        
-        # Stability parameters
+
+        # Stability parameters (tuned for fewer false positives during idle)
         self.voting_window = voting_window
         self.consensus_threshold = consensus_threshold
         self.consecutive_threshold = consecutive_threshold
-        self.motion_threshold = motion_threshold
         self.presence_threshold = presence_threshold
+        self.min_temporal_variance = min_temporal_variance
+        self.min_frame_to_frame_motion = min_frame_to_frame_motion
+        self.body_frames_ratio = body_frames_ratio
+        self.min_top_margin = min_top_margin
         
         # Initialize pipeline components
         self.extractor = LandmarkExtractor(resize_height=512)
         self.builder = FeatureBuilder(ema_alpha=0.5)
-        self.buffer = SequenceBuffer(buffer_size=self.buffer_size)
+        self.buffer = SequenceBuffer(
+            buffer_size=self.buffer_size,
+            min_frames_to_predict=self.buffer_size,
+        )
         
         # State variables
         self.model = None
@@ -93,33 +101,53 @@ class SignLanguageInferenceEngine:
         landmarks = self.extractor.extract_landmarks(frame)
         self.buffer.add_frame(landmarks)
 
+    def is_person_in_frame(self, sequence):
+        """
+        Reject sequences where the user is mostly out of frame (no pose detected).
+        Pose reference points: [82] left_shoulder, [83] right_shoulder, [84] nose.
+        """
+        pose = sequence[:, 82:85, :]
+        frames_with_body = ~np.isnan(pose).all(axis=(1, 2))
+        return np.mean(frames_with_body) >= self.body_frames_ratio
+
     def has_sign_activity(self, sequence):
         """
-        Activity Filtering Gate:
-        1. Presence: Are hand landmarks actually detected (not just NaNs/Zeros)?
-        2. Motion: Is there significant frame-to-frame movement (temporal variance) in the hand landmarks?
-        
-        NOTE: With the updated 85-landmark format:
-          [0:21]  = Left Hand
-          [21:42] = Right Hand
-          [42:82] = Lips
-          [82:85] = Pose
+        Activity Filtering Gate — rejects idle/static poses before model inference.
+
+        Checks (in order):
+          1. Body presence  — pose landmarks visible in enough frames
+          2. Hand presence  — hand landmarks detected in enough frames
+          3. Temporal variance — mean landmark variance across the window
+          4. Frame-to-frame motion — total hand displacement between frames
+
+        Landmark layout (85 points):
+          [0:21]  = Left Hand, [21:42] = Right Hand
+          [42:82] = Lips,       [82:85] = Pose
         """
-        # Hand indices in the 85-landmark format: Left [0:21], Right [21:42]
-        hands = sequence[:, 0:42, :]
-        
-        # 1. Presence Check: Check if any hand landmarks are detected (not all NaN)
-        present_mask = ~np.isnan(hands).all(axis=(1, 2))
-        presence_ratio = np.mean(present_mask)
-        if presence_ratio < self.presence_threshold:
+        if not self.is_person_in_frame(sequence):
             return False
-            
-        # 2. Motion Check: Temporal variance of hand landmarks (X and Y coordinates)
-        # Using nanvar to ignore NaNs in the variance calculation
-        hand_vars = np.nanvar(hands[:, :, :2], axis=0)
-        max_variance = np.nanmax(hand_vars) if not np.all(np.isnan(hand_vars)) else 0
-        
-        return max_variance > self.motion_threshold
+
+        hands = sequence[:, 0:42, :]
+
+        present_mask = ~np.isnan(hands).all(axis=(1, 2))
+        if np.mean(present_mask) < self.presence_threshold:
+            return False
+
+        hand_vars = np.nanvar(hands, axis=0)
+        if np.nanmean(hand_vars) < self.min_temporal_variance:
+            return False
+
+        if np.sum(present_mask) < 2:
+            return False
+
+        hands_filled = np.where(np.isnan(hands), 0.0, hands)
+        diff = np.abs(np.diff(hands_filled, axis=0))
+        both_present = present_mask[:-1] & present_mask[1:]
+        if not np.any(both_present):
+            return False
+
+        total_motion = np.sum(diff[both_present])
+        return total_motion >= self.min_frame_to_frame_motion
 
     def predict(self, sequence_tensor):
         """
@@ -134,20 +162,24 @@ class SignLanguageInferenceEngine:
             label        (str)   : Turkish label of the predicted sign class.
             confidence   (float) : Softmax probability of the top prediction (0.0–1.0).
             latency_ms   (float) : Inference wall-clock time in milliseconds.
+            top_margin   (float) : Gap between top-1 and top-2 probabilities.
         """
         if self.model is None:
-            return None, 0.0, 0.0
+            return None, 0.0, 0.0, 0.0
 
         # ✅ Task 4: Direct __call__ — bypasses model.predict() overhead
         t0 = time.perf_counter()
         predictions = self.model(sequence_tensor, training=False)[0].numpy()
         latency_ms  = (time.perf_counter() - t0) * 1000.0
 
-        predicted_class_idx = int(np.argmax(predictions))
+        top2_indices = np.argsort(predictions)[-2:][::-1]
+        predicted_class_idx = int(top2_indices[0])
         confidence          = float(predictions[predicted_class_idx])
+        top2_prob = float(predictions[top2_indices[1]]) if len(top2_indices) > 1 else 0.0
+        top_margin = confidence - top2_prob
         label               = self.label_map.get(predicted_class_idx, f"Class {predicted_class_idx}")
 
-        return label, confidence, latency_ms
+        return label, confidence, latency_ms, top_margin
 
     def process_image(self, frame, auto_speak=True):
         """
@@ -182,40 +214,40 @@ class SignLanguageInferenceEngine:
                 # --- Stability Feature 1: Activity Filtering Gate ---
                 if self.has_sign_activity(raw_sequence):
                     model_input_tensor = self.builder.preprocess_sequence(raw_sequence)
-                    # ✅ Task 4: unpack 3-tuple (label, confidence, latency_ms)
-                    predicted_label, confidence, latency_ms = self.predict(model_input_tensor)
+                    predicted_label, confidence, latency_ms, top_margin = self.predict(
+                        model_input_tensor
+                    )
                     self.last_latency_ms = latency_ms
 
-                    if confidence >= self.confidence_threshold:
+                    if (
+                        confidence >= self.confidence_threshold
+                        and top_margin >= self.min_top_margin
+                    ):
                         self.last_confidence = confidence
                         self.voting_buffer.append(predicted_label)
-                    else:
-                        self.voting_buffer.append(None)
-                else:
-                    self.voting_buffer.append(None)
-                
+
                 # --- Stability Feature 2: Prediction Stability System (Voting) ---
                 if len(self.voting_buffer) >= self.consensus_threshold:
                     counts = Counter(self.voting_buffer)
-                    if None in counts: del counts[None]
-                    
+
                     if counts:
                         most_common_label, count = counts.most_common(1)[0]
-                        
+
                         if count >= self.consensus_threshold:
                             last_few = list(self.voting_buffer)[-self.consecutive_threshold:]
-                            is_consecutive = all(label == most_common_label for label in last_few)
-                            
+                            is_consecutive = all(
+                                label == most_common_label for label in last_few
+                            )
+
                             if is_consecutive:
                                 if most_common_label != self.last_prediction:
                                     prediction_result = most_common_label
                                     self.last_prediction = most_common_label
                                     self.frames_since_last_pred = 0
-                                    
+
                                     if auto_speak:
                                         self.speech_engine.speak(most_common_label)
-                                        
-                                    self.buffer.clear()
+
                                     self.voting_buffer.clear()
         
         # UI Overlay (Draw on the resized frame)
