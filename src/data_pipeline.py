@@ -194,24 +194,21 @@ class FeatureBuilder:
 class SequenceBuffer:
     """
     Manages a sliding window of 80 frames for real-time inference.
-    
+
     Key features:
       - Sliding window with configurable stride for responsive predictions.
-      - Allows early prediction after `min_frames` (e.g. 15) instead of
-        waiting for a full 80-frame window.
-      - Pads short sequences by replicating the first (oldest) frame at the
-        beginning. This tells the Transformer the user was "still" before
-        the gesture started, avoiding attention jumps from zero-padding.
-      - Supports full buffer clear after a confirmed prediction to prevent
-        old gesture frames from bleeding into new gesture detection.
+      - Waits for a full 80-frame window before triggering inference (matches training).
+      - Pads short sequences only during initial warm-up by replicating the oldest frame.
+      - Supports voting-buffer reset after a confirmed prediction while keeping the
+        sliding window intact (avoids artificial padding artifacts).
     """
-    def __init__(self, buffer_size=80, stride=5, min_frames_to_predict=15):
+    def __init__(self, buffer_size=80, stride=5, min_frames_to_predict=80):
         """
         Args:
             buffer_size:          Target number of frames (must match model = 80).
             stride:               New frames between each prediction trigger.
             min_frames_to_predict: Minimum frames needed before allowing prediction.
-                                   Enables fast recovery after buffer clear.
+                                   Default 80 matches training window for stable inference.
         """
         self.buffer_size = buffer_size
         self.stride = stride
@@ -230,14 +227,15 @@ class SequenceBuffer:
         self.buffer.append(frame_landmarks)   # O(1) append + O(1) auto-eviction
         self._frames_since_last_ready += 1
 
+    def is_full(self):
+        """Return True when the sliding window holds a full 80-frame sequence."""
+        return len(self.buffer) >= self.buffer_size
+
     def is_ready(self):
         """
         Returns True when:
-          1. The buffer has at least `min_frames` frames (e.g. 15), AND
+          1. The buffer has at least `min_frames` frames (default 80), AND
           2. At least `stride` new frames have been added since the last trigger.
-        
-        This allows fast prediction after a buffer clear without waiting
-        for the full 80-frame window to refill.
         """
         if len(self.buffer) < self.min_frames:
             return False
